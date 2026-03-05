@@ -40,6 +40,37 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 # -----------------------------------------------------------------------------
+# 内存安全和线程安全检测 (Sanitizers)
+# -----------------------------------------------------------------------------
+
+# 提供 CMake 选项来开关各种 Sanitizer（默认关闭）
+option(USE_ASAN "Enable AddressSanitizer (Memory error detector)" OFF)
+option(USE_TSAN "Enable ThreadSanitizer (Data race detector)" OFF)
+option(USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+
+if(USE_ASAN AND USE_TSAN)
+    message(FATAL_ERROR "AddressSanitizer (ASan) and ThreadSanitizer (TSan) cannot be used simultaneously!")
+endif()
+
+if(USE_ASAN)
+    message(STATUS "Build with AddressSanitizer enabled.")
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(USE_TSAN)
+    message(STATUS "Build with ThreadSanitizer enabled.")
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+endif()
+
+if(USE_UBSAN)
+    message(STATUS "Build with UndefinedBehaviorSanitizer enabled.")
+    add_compile_options(-fsanitize=undefined)
+    add_link_options(-fsanitize=undefined)
+endif()
+
+# -----------------------------------------------------------------------------
 # 目标：核心库（goodmalloc）
 # -----------------------------------------------------------------------------
 

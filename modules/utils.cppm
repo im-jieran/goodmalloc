@@ -295,6 +295,25 @@ public:
 
     explicit PageMap3() { memset(root_, 0, sizeof(root_)); }
 
+    ~PageMap3()
+    {
+        for (size_t i = 0; i < ROOT_LENGTH; ++i)
+        {
+            if (root_[i] != nullptr)
+            {
+                for (size_t j = 0; j < MIDDLE_LENGTH; ++j)
+                {
+                    if (root_[i]->leaves[j] != nullptr)
+                    {
+                        delete root_[i]->leaves[j];
+                    }
+                }
+                delete root_[i];
+            }
+        }
+    }
+
+
     // 通过页号 k 获取对应的指针
     // 返回 NULL 表示未设置或 k 超出范围
     void* get(Number k) const
