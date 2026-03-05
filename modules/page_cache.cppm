@@ -5,7 +5,6 @@ module;
 #include <cassert>
 #include <mutex>
 #include <new>
-#include <unordered_map>
 
 #include "shared.hpp"
 export module page_cache;
@@ -17,12 +16,12 @@ export class PageCache
 private:
     std::array<Utils::SpanList, PAGE_CACHE_MAX_BUCKETS> span_lists;
 
-    std::unordered_map<page_id_t, Utils::Span*> page_id_to_span;  // page_id 到 span 的映射表
+    Utils::PageMap3<64> page_id_to_span;  // 页号到 span 的映射。key 是页号，value 是包含该页的 span 的指针。
 
     static PageCache page_cache_instance;
 
 private:
-    PageCache()                            = default;
+    PageCache() { page_id_to_span.preallocate_more_memory(); }
     PageCache(const PageCache&)            = delete;
     PageCache& operator=(const PageCache&) = delete;
 
@@ -43,7 +42,7 @@ public:
             if (!span_lists[pages_amount].empty())
             {
                 Utils::Span* span = span_lists[pages_amount].pop_front();  // 获取该桶的一个 span
-                for (page_id_t i = 0; i < span->page_amount; i++) { page_id_to_span[span->page_id + i] = span; }
+                for (page_id_t i = 0; i < span->page_amount; i++) { page_id_to_span.set(span->page_id + i, span); }
                 return span;
             }
 
@@ -64,12 +63,12 @@ public:
                     span_got->page_amount -= pages_amount;
                     span_lists[span_got->page_amount].push_front(span_got);
                     // 记录 span_got（留下来的那部分）的边缘页号的映射，以便后续合并。
-                    page_id_to_span[span_got->page_id]                             = span_got;
-                    page_id_to_span[span_got->page_id + span_got->page_amount - 1] = span_got;
+                    page_id_to_span.set(span_got->page_id, span_got);
+                    page_id_to_span.set(span_got->page_id + span_got->page_amount - 1, span_got);
                     // 记录 span_to_return 中的 page_id 到 span 的映射关系。
                     for (page_id_t i = 0; i < span_to_return->page_amount; i++)
                     {
-                        page_id_to_span[span_to_return->page_id + i] = span_to_return;
+                        page_id_to_span.set(span_to_return->page_id + i, span_to_return);
                     }
 
                     return span_to_return;
@@ -94,6 +93,8 @@ public:
             span_from_os->page_amount = PAGE_CACHE_MAX_BUCKETS - 1;
             span_lists[PAGE_CACHE_MAX_BUCKETS - 1].push_front(span_from_os);
 
+            page_id_to_span.ensure(span_from_os->page_id, span_from_os->page_amount);
+
             // 递归调用自己，复用前面的分割逻辑
             return new_span(pages_amount);
         }
@@ -109,9 +110,11 @@ public:
             span_from_os->page_amount = pages_amount;
             span_from_os->block_size  = pages_amount << PAGE_SHIFT;
 
+            page_id_to_span.ensure(span_from_os->page_id, span_from_os->page_amount);
+
             // 记录该超大 span 的边缘页号的映射
-            page_id_to_span[span_from_os->page_id]                                 = span_from_os;
-            page_id_to_span[span_from_os->page_id + span_from_os->page_amount - 1] = span_from_os;
+            page_id_to_span.set(span_from_os->page_id, span_from_os);
+            page_id_to_span.set(span_from_os->page_id + span_from_os->page_amount - 1, span_from_os);
 
             return span_from_os;
         }
@@ -121,11 +124,11 @@ public:
     // 工具函数：通过块地址找到它所在的 span。
     Utils::Span* map_object_to_span(void* obj)
     {
-        page_id_t                    page_id = ((page_id_t)obj) >> PAGE_SHIFT;  // 通过块地址计算页号
-        std::unique_lock<std::mutex> lc(the_mutex);
-        auto                         it = page_id_to_span.find(page_id);  // 通过页号找到 span
-        assert(it != page_id_to_span.end());                              // 逻辑上一定能找到，否则就是出错了
-        return it->second;
+        page_id_t page_id = ((page_id_t)obj) >> PAGE_SHIFT;  // 通过块地址计算页号
+        // std::unique_lock<std::mutex> lc(the_mutex);
+        void* ptr = page_id_to_span.get(page_id);  // 通过页号找到 span
+        assert(ptr != nullptr);                    // 逻辑上一定能找到，否则就是出错了
+        return static_cast<Utils::Span*>(ptr);
     }
 
 
@@ -140,9 +143,9 @@ public:
         while (true)
         {
             page_id_t left_page_id = span->page_id - 1;
-            auto      it           = page_id_to_span.find(left_page_id);
-            if (it == page_id_to_span.end()) break;  // 没有左邻 span, 停止
-            Utils::Span* left_span = it->second;
+            void*     ptr          = page_id_to_span.get(left_page_id);
+            if (ptr == nullptr) break;  // 没有左邻 span, 停止
+            Utils::Span* left_span = static_cast<Utils::Span*>(ptr);
             if (left_span->used) break;  // 左邻 span 正被 central cache 使用, 停止
             if (span->page_amount + left_span->page_amount > PAGE_CACHE_MAX_BUCKETS - 1)
                 break;  // 合并后超过最大页数, 停止
@@ -159,9 +162,9 @@ public:
         while (true)
         {
             page_id_t right_page_id = span->page_id + span->page_amount;
-            auto      it            = page_id_to_span.find(right_page_id);
-            if (it == page_id_to_span.end()) break;  // 没有右邻 span, 停止
-            Utils::Span* right_span = it->second;
+            void*     ptr           = page_id_to_span.get(right_page_id);
+            if (ptr == nullptr) break;  // 没有右邻 span, 停止
+            Utils::Span* right_span = static_cast<Utils::Span*>(ptr);
             if (right_span->used) break;  // 右邻 span 正被 central cache 使用, 停止
             if (span->page_amount + right_span->page_amount > PAGE_CACHE_MAX_BUCKETS - 1)
                 break;  // 合并后超过最大页数, 停止
@@ -177,8 +180,8 @@ public:
         span->used = false;                              // 标记 span 不再被 central cache 使用
 
         // 映射边缘页
-        page_id_to_span[span->page_id]                         = span;
-        page_id_to_span[span->page_id + span->page_amount - 1] = span;
+        page_id_to_span.set(span->page_id, span);
+        page_id_to_span.set(span->page_id + span->page_amount - 1, span);
     }
 };
 PageCache PageCache::page_cache_instance;

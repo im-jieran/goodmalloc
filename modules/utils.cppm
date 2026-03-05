@@ -1,6 +1,7 @@
 module;
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <expected>
 #include <mutex>
 
@@ -248,5 +249,128 @@ public:
 
     // 判断该 SpanList 是否托管有 Span
     bool empty() const { return head->next == head; }
+};
+
+
+// 三层基数树
+// 适用于64位系统，能够高效映射大地址空间
+// BITS 参数指定了地址空间的位数
+template <int BITS>
+class PageMap3
+{
+private:
+    // 三层分割策略：
+    // ROOT: 10位(1024项), MIDDLE: 10位(1024项), LEAF: 12位(4096项)
+    // 总共可以映射 2^32 个页号，足够覆盖实际使用的地址空间
+    // 我们没有使用全量 LEAF_BITS，因为那样叶子节点数量会多到无法接受。
+
+    static constexpr int    ROOT_BITS   = 15;
+    static constexpr size_t ROOT_LENGTH = 1 << ROOT_BITS;
+
+    static constexpr int    MIDDLE_BITS   = 15;
+    static constexpr size_t MIDDLE_LENGTH = 1 << MIDDLE_BITS;
+
+    static constexpr int    LEAF_BITS   = 12;
+    static constexpr size_t LEAF_LENGTH = 1 << LEAF_BITS;
+
+    static_assert(BITS >= 32, "PageMap3 至少需要 32 位才有意义");
+
+    // 第三层：叶子节点，存储实际的指针数组
+    struct Leaf
+    {
+        void* values[LEAF_LENGTH];
+    };
+
+    // 第二层：中间节点，存储指向叶子节点的指针数组
+    struct Middle
+    {
+        Leaf* leaves[MIDDLE_LENGTH];
+    };
+
+    // 第一层：根节点数组，存储指向中间节点的指针
+    Middle* root_[ROOT_LENGTH];
+
+public:
+    typedef uintptr_t Number;
+
+    explicit PageMap3() { memset(root_, 0, sizeof(root_)); }
+
+    // 通过页号 k 获取对应的指针
+    // 返回 NULL 表示未设置或 k 超出范围
+    void* get(Number k) const
+    {
+        // 计算三层索引
+        const Number i1 = k >> (MIDDLE_BITS + LEAF_BITS);          // 第一层索引
+        const Number i2 = (k >> LEAF_BITS) & (MIDDLE_LENGTH - 1);  // 第二层索引
+        const Number i3 = k & (LEAF_LENGTH - 1);                   // 第三层索引
+
+        // 检查是否越界或未分配
+        if (i1 >= ROOT_LENGTH || root_[i1] == NULL || root_[i1]->leaves[i2] == NULL) { return NULL; }
+
+        return root_[i1]->leaves[i2]->values[i3];
+    }
+
+    // 设置页号 k 对应的指针为 v
+    // 约束：k 必须在有效范围内，且对应的路径必须已经通过 Ensure 分配
+    void set(Number k, void* v)
+    {
+        const Number i1 = k >> (MIDDLE_BITS + LEAF_BITS);
+        const Number i2 = (k >> LEAF_BITS) & (MIDDLE_LENGTH - 1);
+        const Number i3 = k & (LEAF_LENGTH - 1);
+
+        assert(i1 < ROOT_LENGTH);
+        assert(root_[i1] != NULL);
+        assert(root_[i1]->leaves[i2] != NULL);
+
+        root_[i1]->leaves[i2]->values[i3] = v;
+    }
+
+    // 确保从 start 开始往后的 n 页空间已经分配
+    // 返回 false 表示分配失败（通常是因为超出地址范围）
+    bool ensure(Number start, size_t n)
+    {
+        for (Number key = start; key <= start + n - 1;)
+        {
+            const Number i1 = key >> (MIDDLE_BITS + LEAF_BITS);
+            const Number i2 = (key >> LEAF_BITS) & (MIDDLE_LENGTH - 1);
+
+            // 检查溢出：i1 不能超过根层的大小
+            if (i1 >= ROOT_LENGTH) return false;
+
+            // 如果第二层未分配，则分配一个 Middle 节点
+            if (root_[i1] == NULL)
+            {
+                Middle* middle = new Middle;
+                memset(middle, 0, sizeof(*middle));
+                root_[i1] = middle;
+            }
+
+            // 如果第三层未分配，则分配一个 Leaf 节点
+            if (root_[i1]->leaves[i2] == NULL)
+            {
+                Leaf* leaf = new Leaf;
+                memset(leaf, 0, sizeof(*leaf));
+                root_[i1]->leaves[i2] = leaf;
+            }
+
+            // 跳到下一个叶子节点覆盖的范围
+            key = ((key >> LEAF_BITS) + 1) << LEAF_BITS;
+        }
+        return true;
+    }
+
+    // 预分配内存
+    // 对于三层树，地址空间可能非常大，通常不预分配所有内存
+    // 可以根据实际需求部分预分配以提高性能
+    void preallocate_more_memory()
+    {
+        // 这里采用保守策略：预分配前 64MB 对应的页映射空间
+        // 64MB / 4KB = 16384 页
+        // 这部分只占用约 16KB 的基数树节点内存（非常小）
+        const size_t conservative_preallocate_mb = 64;
+        const size_t pages_to_preallocate        = (conservative_preallocate_mb * 1024 * 1024) >> PAGE_SHIFT;
+
+        ensure(0, pages_to_preallocate);
+    }
 };
 }  // namespace Utils
