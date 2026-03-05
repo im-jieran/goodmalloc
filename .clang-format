@@ -1,0 +1,51 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+
+# Indent 4 spaces, no tabs.
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# Brace in new line (Allman style).
+BreakBeforeBraces: Allman
+
+# No indent: private, protected, public.
+AccessModifierOffset: -4
+
+# short statement on a single line.
+AllowShortBlocksOnASingleLine: Always
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortFunctionsOnASingleLine: Inline
+
+# Pointer and reference alignment.
+PointerAlignment: Left
+
+# Initializer list.
+BreakConstructorInitializers: BeforeComma
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+
+# When there are too much arguments: arrange them vertically.
+BinPackArguments: false
+BinPackParameters: false
+
+# Align arguments.
+AlignAfterOpenBracket: BlockIndent
+
+# 2 Empty lines at most. Used to separate functions definitions.
+MaxEmptyLinesToKeep: 2
+
+# Align consecutively.
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+
+# No too long lines.
+ColumnLimit: 120
+
+# No indent for namespaces.
+NamespaceIndentation: None
+
+# Indent in switch.
+IndentCaseLabels: true
+
+...
